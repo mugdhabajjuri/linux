@@ -458,6 +458,10 @@ struct sched_entity {
 	u64				exec_start;
 	u64				sum_exec_runtime;
 	u64				vruntime;
+#ifdef CONFIG_CFS_BVT
+    u64         effective_vruntime;
+    unsigned int        is_warped;
+#endif
 	u64				prev_sum_exec_runtime;
 
 	u64				nr_migrations;

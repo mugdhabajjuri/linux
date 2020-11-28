@@ -401,6 +401,10 @@ struct task_group {
 #endif
 #endif
 
+#ifdef CONFIG_CFS_BVT
+    s64 bvt_warp_ns;
+#endif
+
 #ifdef CONFIG_RT_GROUP_SCHED
 	struct sched_rt_entity	**rt_se;
 	struct rt_rq		**rt_rq;

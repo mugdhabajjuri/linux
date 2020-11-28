@@ -3071,6 +3071,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.prev_sum_exec_runtime	= 0;
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
+#ifdef CONFIG_CFS_BVT
+    p->se.effective_vruntime    = 0;
+    p->se.is_warped         = 0;
+#endif
 	INIT_LIST_HEAD(&p->se.group_node);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -7093,6 +7097,9 @@ void __init sched_init(void)
 
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		init_cfs_bandwidth(&root_task_group.cfs_bandwidth);
+#ifdef CONFIG_CFS_BVT
+        root_task_group.bvt_warp_ns = 0;
+#endif /* CONFIG_CFS_BVT */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 #ifdef CONFIG_RT_GROUP_SCHED
 		root_task_group.rt_se = (struct sched_rt_entity **)ptr;
@@ -7167,6 +7174,9 @@ void __init sched_init(void)
 		 * directly in rq->cfs (i.e root_task_group->se[] = NULL).
 		 */
 		init_tg_cfs_entry(&root_task_group, &rq->cfs, NULL, i, NULL);
+#ifdef CONFIG_CFS_BVT
+        root_task_group.bvt_warp_ns = 0;
+#endif /* CONFIG_CFS_BVT */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 		rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
@@ -8157,6 +8167,22 @@ static int cpu_cfs_stat_show(struct seq_file *sf, void *v)
 	return 0;
 }
 #endif /* CONFIG_CFS_BANDWIDTH */
+#ifdef CONFIG_CFS_BVT
+static int cpu_bvt_warp_write_s64(struct cgroup_subsys_state *css,
+            struct cftype *cft, s64 val)
+{
+	struct task_group *tg = css_tg(css);
+    tg->bvt_warp_ns = val;
+    return 0;
+}
+
+static s64 cpu_bvt_warp_read_s64(struct cgroup_subsys_state *css,
+            struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+    return tg->bvt_warp_ns;
+}
+#endif /* CONFIG_CFS_BVT */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -8208,6 +8234,13 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "stat",
 		.seq_show = cpu_cfs_stat_show,
 	},
+#endif
+#ifdef CONFIG_CFS_BVT
+    {
+        .name = "bvt_warp_ns",
+        .read_s64 = cpu_bvt_warp_read_s64,
+        .write_s64 = cpu_bvt_warp_write_s64,
+    },
 #endif
 #ifdef CONFIG_RT_GROUP_SCHED
 	{

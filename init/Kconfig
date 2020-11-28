@@ -962,6 +962,20 @@ config CFS_BANDWIDTH
 	  restriction.
 	  See Documentation/scheduler/sched-bwc.rst for more information.
 
+config CFS_BVT
+   bool "Borrowed-Virtual Time support for CFS"
+   depends on FAIR_GROUP_SCHED
+   default n
+   help
+     This feature enables BVT extensions to CFS.  This feature
+     allows you to bias the wakeup preemption decisions that the
+     CFS scheduler makes.  For instance, you can guarantee that
+     latency-sensitive task groups are not preempted by waking
+     batch-oriented task groups, independent of how much CPU share
+     you allocate to each group.
+     FIXME: More documentation.
+
+
 config RT_GROUP_SCHED
 	bool "Group scheduling for SCHED_RR/FIFO"
 	depends on CGROUP_SCHED

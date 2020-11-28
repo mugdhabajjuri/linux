@@ -129,6 +129,23 @@ int __weak arch_asym_cpu_priority(int cpu)
 unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
 #endif
 
+#ifdef CONFIG_CFS_BVT
+/*
+   + * If the BVT_PLACEMENT scheduler feature is enabled, waking BVT tasks
+   + * are placed differently from CFS tasks when they wakeup.  Rather
+   + * than being placed some large factor (i.e. sched_latency >> 1)
+   + * before min_vruntime (which gives waking tasks an unfair advantage
+   + * in preempting currently runng tasks), they are placed
+   + * sched_bvt_place_epsilon nanoseconds relative to min_vruntime.  If
+   + * you really want a BVT task to preempt currently running tasks, it
+   + * should have a greater "warp" value than the current running task.
+   + *
+   + * Default: 1us in the future, units: nanoseconds
+   + */
+unsigned int sysctl_sched_bvt_place_epsilon = 1000UL;
+#endif
+
+
 static inline void update_load_add(struct load_weight *lw, unsigned long inc)
 {
 	lw->weight += inc;
@@ -506,6 +523,26 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 
 #endif	/* CONFIG_FAIR_GROUP_SCHED */
 
+#ifdef CONFIG_CFS_BVT
+static inline void update_effective_vruntime(struct sched_entity *se)
+{
+    s64 warp;
+    struct task_group *tg;
+
+    if (entity_is_task(se)) {
+        se->effective_vruntime = se->vruntime;
+        return;
+    }
+
+    tg = se->my_q->tg;
+    warp = tg->bvt_warp_ns;
+
+    /* FIXME: Should we calc_delta_fair on warp_ns? */
+    se->effective_vruntime = se->vruntime - warp;
+    se->is_warped = warp ? 1 : 0;
+}
+#endif /* CONFIG_CFS_BVT */
+
 static __always_inline
 void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec);
 
@@ -534,7 +571,11 @@ static inline u64 min_vruntime(u64 min_vruntime, u64 vruntime)
 static inline int entity_before(struct sched_entity *a,
 				struct sched_entity *b)
 {
-	return (s64)(a->vruntime - b->vruntime) < 0;
+#ifdef CONFIG_CFS_BVT
+    return (s64)(a->effective_vruntime - b->effective_vruntime) < 0;
+#else
+    return (s64)(a->vruntime - b->vruntime) < 0;
+#endif
 }
 
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
@@ -861,6 +902,9 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	schedstat_add(cfs_rq->exec_clock, delta_exec);
 
 	curr->vruntime += calc_delta_fair(delta_exec, curr);
+#ifdef CONFIG_CFS_BVT
+    update_effective_vruntime(curr);
+#endif
 	update_min_vruntime(cfs_rq);
 
 	if (entity_is_task(curr)) {
@@ -4132,8 +4176,18 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 		vruntime -= thresh;
 	}
 
+#ifdef CONFIG_CFS_BVT
+    if (sched_feat(BVT_PLACEMENT) && !entity_is_task(se) && se->is_warped) {
+        vruntime = cfs_rq->min_vruntime + sysctl_sched_bvt_place_epsilon;
+    }
+#endif
+
 	/* ensure we never gain time by being placed backwards. */
 	se->vruntime = max_vruntime(se->vruntime, vruntime);
+
+#ifdef CONFIG_CFS_BVT
+    update_effective_vruntime(se);
+#endif
 }
 
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
@@ -4200,8 +4254,12 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * If we're the current task, we must renormalise before calling
 	 * update_curr().
 	 */
-	if (renorm && curr)
+	if (renorm && curr) {
 		se->vruntime += cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
+    }
 
 	update_curr(cfs_rq);
 
@@ -4211,8 +4269,12 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * placed in the past could significantly boost this task to the
 	 * fairness detriment of existing tasks.
 	 */
-	if (renorm && !curr)
+	if (renorm && !curr) {
 		se->vruntime += cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
+    }
 
 	/*
 	 * When enqueuing a sched_entity, we must:
@@ -4330,8 +4392,12 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * update_min_vruntime() again, which will discount @se's position and
 	 * can move min_vruntime forward still more.
 	 */
-	if (!(flags & DEQUEUE_SLEEP))
+	if (!(flags & DEQUEUE_SLEEP)) {
 		se->vruntime -= cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
+    }
 
 	/* return excess runtime on last dequeue */
 	return_cfs_rq_runtime(cfs_rq);
@@ -4379,7 +4445,11 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		return;
 
 	se = __pick_first_entity(cfs_rq);
-	delta = curr->vruntime - se->vruntime;
+#ifdef CONFIG_CFS_BVT
+    delta = curr->effective_vruntime - se->effective_vruntime;
+#else
+    delta = curr->vruntime - se->vruntime;
+#endif
 
 	if (delta < 0)
 		return;
@@ -6785,6 +6855,9 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 #endif
 
 		se->vruntime -= min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
 	}
 
 	if (p->on_rq == TASK_ON_RQ_MIGRATING) {
@@ -6868,7 +6941,11 @@ static unsigned long wakeup_gran(struct sched_entity *se)
 static int
 wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
 {
-	s64 gran, vdiff = curr->vruntime - se->vruntime;
+#ifdef CONFIG_CFS_BVT
+    s64 gran, vdiff = curr->effective_vruntime - se->effective_vruntime;
+#else
+    s64 gran, vdiff = curr->vruntime - se->vruntime;
+#endif
 
 	if (vdiff <= 0)
 		return -1;
@@ -10727,6 +10804,9 @@ static void task_fork_fair(struct task_struct *p)
 	if (curr) {
 		update_curr(cfs_rq);
 		se->vruntime = curr->vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
 	}
 	place_entity(cfs_rq, se, 1);
 
@@ -10736,10 +10816,17 @@ static void task_fork_fair(struct task_struct *p)
 		 * 'current' within the tree based on its new key value.
 		 */
 		swap(curr->vruntime, se->vruntime);
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(curr);
+        update_effective_vruntime(se);
+#endif
 		resched_curr(rq);
 	}
 
 	se->vruntime -= cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
 	rq_unlock(rq, &rf);
 }
 
@@ -10863,6 +10950,9 @@ static void detach_task_cfs_rq(struct task_struct *p)
 		 */
 		place_entity(cfs_rq, se, 0);
 		se->vruntime -= cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
 	}
 
 	detach_entity_cfs_rq(se);
@@ -10875,8 +10965,12 @@ static void attach_task_cfs_rq(struct task_struct *p)
 
 	attach_entity_cfs_rq(se);
 
-	if (!vruntime_normalized(p))
+	if (!vruntime_normalized(p)) {
 		se->vruntime += cfs_rq->min_vruntime;
+#ifdef CONFIG_CFS_BVT
+        update_effective_vruntime(se);
+#endif
+    }
 }
 
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
